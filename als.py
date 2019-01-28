@@ -3,8 +3,7 @@ from scipy.sparse import coo_matrix
 import pyspark
 from pyspark.ml.recommendation import ALS as spark_ALS
 from pyspark.sql.types import StructType, StructField, FloatType, IntegerType
-class ALS():
-    """Basic class for Alternating Least Squares Model. Error ~ 10x greater than Spark ALS"""
+class ALS:
     def __init__(self, n_features=10, lam=0.1, n_jobs=1, max_iter=10, n_blocks=1, tol=0.1):
         self.n_features=n_features
         self.lam=lam
@@ -15,16 +14,29 @@ class ALS():
         self.users=None
         self.items=None
         
-    def fit(self, X, y=None):
+    def fit(self, X, y=None, warm_start=True):
         R = self._convert_to_sparse(X, y)
-        U,V = [np.random.rand(n, self.n_features) for n in R.shape]
-        L = np.diag([0.01 for _ in range(10)])
+        if not warm_start or self.users is None and self.items is None:
+            U,V = [np.random.normal(0, np.sqrt(self.n_features)/self.n_features, (n,self.n_features))
+                   for n in R.shape]
+        else:
+            U,V = self.users, self.items.T
+        L = np.diag([self.lam for _ in range(self.n_features)])
         for _ in range(self.max_iter):
-            U = (R @ V) @ np.linalg.inv(V.T @ V + L)
-            V = (R.T @ U) @ np.linalg.inv(U.T @ U + L) 
+            U = self.lst_sq(V, R.T, self.lam).T
+            V = self.lst_sq(U, R, self.lam).T
             if self._error(R, U, V.T) < self.tol:
                 break
-        return U, V
+        self.users=U
+        self.items=V.T
+        return self
+    
+    def predict(self, X):
+        output = []
+        for u,v in X:
+            u,v = int(u), int(v)
+            output.append(sum(self.users[u] * self.items.T[v]))
+        return output
         
     def _error(self, x, u=None, v=None, lam=None):
         if u is None: u = self.users
@@ -40,18 +52,30 @@ class ALS():
     def _convert_to_sparse(self, X, y):
         cols, rows = [X[:, i].astype(int) for i in range(2)]
         return coo_matrix((y, (cols, rows)))
+    
+    @staticmethod
+    def lst_sq(a, b, reg=0.1):
+        """ Least Squares solution for ax=b with regularization
+        """
+        L = reg * np.eye(a.shape[1])
+        return np.linalg.pinv(a.T@a + L) @ a.T @ b
 
 class SparkALS(ALS):
     """Simple Wrapper class for spark als model. Mimics behaivior of base ALS class.
     Intended for comparison purposes"""
-    def __init__(self, **kwargs):
+    def __init__(self, random_seed=None, **kwargs):
         self.spark = pyspark.sql.SparkSession.builder.getOrCreate()
+        self.random_seed=random_seed
         super().__init__(**kwargs)
 
     def fit(self, X, y=None):
         R = np.append(X, y[:, None], 1).tolist()
         S = self.spark.createDataFrame(R, ['user','item','rating'])
-        model = spark_ALS(rank=self.n_features, regParam=self.lam, 
+        model = spark_ALS(rank=self.n_features, regParam=self.lam,
+          seed=self.random_seed,
+          numUserBlocks=self.n_blocks,
+          numItemBlocks=self.n_blocks,  
+          maxIter=self.max_iter,
           itemCol='item', 
           userCol='user',
           ratingCol='rating')
@@ -60,6 +84,8 @@ class SparkALS(ALS):
         V = model.itemFactors.toPandas()
         U = np.array([row for row in U['features']])
         V = np.array([row for row in V['features']])
+        self.users=U
+        self.items=V.T
         return U,V
 
 def random_ratings(n_users, n_items, response_rate=0.1):
