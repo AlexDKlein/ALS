@@ -14,7 +14,23 @@ class ALS:
         self.users=None
         self.items=None
         
-    def fit(self, X, y=None, warm_start=True):
+    def fit(self, X, y=None, warm_start=False):
+        """Fit the model using ALS given pairs of user-item ratings.
+        Parameters
+        ----------
+        X: np.ndarray, shape=(n, 2), dtype=int
+            2d array containing user and item id pairs.
+        y: np.ndarray, dtype=(float,int)
+            Array containing the ratings corresponding to user-item pairs in X.
+        warm_start: bool, default=False
+            Whether to use resulting user and item factors of previous fit calls as the 
+            starting values. Randomizes the factors if False.
+        
+        Returns
+        -------
+        output: self
+            The fitted model.
+        """
         R = self._convert_to_sparse(X, y)
         if not warm_start or self.users is None and self.items is None:
             U,V = [np.random.normal(0, np.sqrt(self.n_features)/self.n_features, (n,self.n_features))
@@ -32,6 +48,17 @@ class ALS:
         return self
     
     def predict(self, X):
+        """Given the user-item matrices found through fit, estimate the ratings of pairs from X.
+        Parameters
+        ----------
+        X: np.ndarray, shape=(n, 2), dtype=int
+            2d array containing user and item id pairs to predict.
+
+        Returns
+        -------
+        output: np.ndarray
+            Estimated ratings for user-item pairs in X.
+        """
         output = []
         for u,v in X:
             u,v = int(u), int(v)
@@ -50,6 +77,12 @@ class ALS:
                  + sum(a@a.T for a in v))
         
     def _convert_to_sparse(self, X, y):
+        """Convert a set of user-item pairs and known ratings into a sparse matrix.
+        Parameters
+        ----------
+        X: np.ndarray
+        y: np.ndarray
+        """
         cols, rows = [X[:, i].astype(int) for i in range(2)]
         return coo_matrix((y, (cols, rows)))
     
@@ -94,10 +127,12 @@ def random_ratings(n_users, n_items, response_rate=0.1):
     """
     R = np.array([])
     for usr in range(n_users):
-        for itm in range(n_items):
-            if np.random.rand() <= response_rate:
-                rtg = np.random.randint(1, 6)
-                R = np.append(R, [[usr, itm, rtg]])
+        while usr not in set(R.reshape(-1, 3)[:, 0]):
+            for itm in range(n_items):
+                if np.random.rand() <= response_rate:
+                    rtg = np.random.randint(1, 6)
+                    R = np.append(R, [[usr, itm, rtg]])
+        
     R=R.reshape(-1, 3)
     X,y = R[:, :2], R[:, 2]
     return X,y
